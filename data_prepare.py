@@ -11,8 +11,8 @@ from os.path import isfile, join
 
 
 
-processed_dir="../human_features/processed/"
-npy_file = "../human_features/npy_file_new(human_dataset).npy"
+processed_dir="../Human_features/processed/"
+npy_file = "../Human_features/npy_file_new(human_dataset).npy"
 npy_ar = np.load(npy_file)
 print(npy_ar.shape)
 from torch.utils.data import Dataset as Dataset_n
