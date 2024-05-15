@@ -184,174 +184,155 @@ net_GAT = AttGNN()
 print(net_GAT)
 
 class CoGN_Model(nn.Module):
-	class AtomEmbedding(nn.Module):
-	  def __init__(self,num_class,emb_dim):
-	    super(AtomEmbedding, self).__init__()
-	    self.num_class = num_class
-	    self.emb_dim = emb_dim
-	    self.embedding_layer = nn.Embedding(num_class,emb_dim)
-	  def forward(self,inputs):
-	    out = self.embedding_layer(inputs)
-	    return out
-	
-	
-	class GaussBasisExpansion(nn.Module):
-	    def __init__(self, mu, sigma, **kwargs):
-	        super().__init__(**kwargs)
-	        # shape: (1, len(mu))
-	        mu = torch.unsqueeze(torch.FloatTensor(mu), 0)
-	        self.register_buffer("mu", mu)
-	        # shape: (1, len(sigma))
-	        sigma = torch.unsqueeze(torch.FloatTensor(sigma), 0)
-	        self.register_buffer("sigma", sigma)
-	
-	    @classmethod
-	    def from_bounds(cls, n: int, low: float, high: float, variance: float = 1.0):
-	        mus = np.linspace(low, high, num=n + 1)
-	        var = np.diff(mus)
-	        mus = mus[1:]
-	        return cls(mus, np.sqrt(var * variance))
-	
-	    @classmethod
-	    def from_bounds_log(
-	        cls, n: int, low: float, high: float, base: float = 32, variance: float = 1
-	    ):
-	        mus = (np.logspace(0, 1, num=n + 1, base=base) - 1) / (base - 1) * (high - low) + low
-	        var = np.diff(mus)
-	        mus = mus[1:]
-	        return cls(mus, np.sqrt(var * variance))
-	
-	    def forward(self, x, **kwargs):
-	        return torch.exp(-torch.pow(x - self.mu, 2) / (2 * torch.pow(self.sigma, 2)))
-	
-	
-	class EdgeEmbedding(nn.Module):
-	    def __init__(
-	        self,
-	        bins_distance: int = 32,
-	        max_distance: float = 5.0,
-	        distance_log_base: float = 1.0,
-	        gaussian_width_distance: float = 1.0,
-	        bins_voronoi_area: int = None,
-	        max_voronoi_area: float = 32.0,
-	        voronoi_area_log_base: float = 1.0,
-	        gaussian_width_voronoi_area: float = 1.0,
-	        **kwargs
-	    ):
-	        super().__init__(**kwargs)
-	        if distance_log_base == 1.0:
-	            self.distance_embedding = GaussBasisExpansion.from_bounds(
-	                bins_distance, 0.0, max_distance, variance=gaussian_width_distance
-	            )
-	        else:
-	            self.distance_embedding = GaussBasisExpansion.from_bounds_log(
-	                bins_distance,
-	                0.0,
-	                max_distance,
-	                base=distance_log_base,
-	                variance=gaussian_width_distance,
-	            )
-	
-	        self.distance_log_base = distance_log_base
-	        self.log_max_distance = np.log(max_distance)
-	        return
-	
-	    def forward(self, distance):
-	        d = torch.unsqueeze(distance, 1)
-	        distance_embedded = self.distance_embedding(d)
-	        return distance_embedded
-    	class Block(torch.nn.Module):
-	    def __init__(self,node_mlp,edge_mlp,global_mlp,block,aggregate_edges_local="sum"):
-	        super().__init__()
-	        self.num_layers = 5
-	        self.aggregate_edges_local = aggregate_edges_local
-	        if edge_mlp != None:
-	            self.edgemlp = MLP(in_channels = edge_mlp["input_dim"],hidden_channels = edge_mlp["hidden_dim_list"][0],out_channels = edge_mlp["hidden_dim_list"][0],num_layers = len(edge_mlp["hidden_dim_list"]),act = edge_mlp["activation"])
-	        if node_mlp != None:
-	            self.nodemlp = MLP(in_channels = node_mlp["input_dim"],hidden_channels = node_mlp["hidden_dim_list"][0],out_channels = node_mlp["input_dim"],num_layers = len(node_mlp["hidden_dim_list"]),act = node_mlp["activation"])
-	        if global_mlp != None:
-	            self.globalmlp = MLP(in_channels = global_mlp["input_dim"],hidden_channels = global_mlp["hidden_dim_list"][0],out_channels = global_mlp["hidden_dim_list"][0],num_layers = len(global_mlp["hidden_dim_list"]))
-	        self.block = block
-	
-	    def Update_E(self,x,edge_index,edge_attr):
-	        node_in = x[edge_index[0].to(int)] #check here
-	        node_out = x[edge_index[1].to(int)]
-	        concat_feature = torch.cat((edge_attr,node_in,node_out),dim = -1)
-	        edge_attr_new = self.edgemlp(concat_feature)
-	        return edge_attr_new
-	
-	
-	    def Update_V(self,x,edge_index,edge_attr):
-	        node_index = edge_index[0]
-	        aggregated_edge = scatter(edge_attr,node_index,dim = 0,reduce = self.aggregate_edges_local)
-	        x = x + self.nodemlp(aggregated_edge)
-	        return x
-	
-	    def Update_G(self,x,edge_index):
-	        x_mean = torch.mean(x,dim = 0)
-	        global_out = self.globalmlp(x_mean)
-	        return global_out
-	    def forward(self,x,edge_index,edge_attr):
-	        if self.block == "processing":
-	            edge_attr = self.Update_E(x,edge_index,edge_attr)
-	            x = self.Update_V(x,edge_index,edge_attr)
-	            return x,edge_attr
-	        if self.block == "output":
-	            out = self.Update_G(x,edge_index)
-	            return out
-	
-	
-	class CoGN(nn.Module):
-	    def __init__(self,node_class=None,
-	        emb_dim=128,
-	        num_layer=5,
-	        bins_distance=32,
-	        distance_cutoff=5,):
-	        super().__init__()
-	        self.atom_embedding = AtomEmbedding(node_class,emb_dim)
-	        self.edge_embedding = EdgeEmbedding(
-	            bins_distance=bins_distance,
-	            max_distance=distance_cutoff,
-	            distance_log_base=1.,
-	            bins_voronoi_area=None,
-	            max_voronoi_area=None)
-	
-	        self.atom_mlp = nn.Linear(emb_dim, emb_dim)
-	        self.edge_mlp = nn.Linear(bins_distance, emb_dim)
-	        processing_block_cfg = {
-	            'edge_mlp': {'input_dim': emb_dim*3, 'hidden_dim_list': [emb_dim] * 5, 'activation': 'silu'},
-	            'node_mlp': {'input_dim': emb_dim*1, 'hidden_dim_list': [emb_dim] * 1, 'activation': 'silu'},
-	            'global_mlp': None,
-	            'aggregate_edges_local': 'sum',"block" : "processing"
-	        }
-	
-	        output_block_cfg = {
-	            'edge_mlp': None,
-	            'node_mlp': None,
-	            'global_mlp': {'input_dim': emb_dim * 1, 'hidden_dim_list': [1], 'activation': None,},"block" : "output"
-	        }
-	
-	        ########## processing layer ##########
-	        self.num_layer = num_layer
-	        self.processing_layers = nn.ModuleList()
-	        for _ in range(self.num_layer):
-	            self.processing_layers.append(Block(**processing_block_cfg))
-	
-	        ########## output layer ##########
-	        self.output_layer = Block(**output_block_cfg)
-		self.sigmoid = nn.Sigmoid()
-	
-	    def forward(self,x,edge_index,edge_attr):
-	        node = self.atom_embedding(x)
-	        node = self.atom_mlp(node)
-	
-	        edge = self.edge_embedding(edge_attr)
-	        edge = self.edge_mlp(edge)
-	
-	        for i in range(self.num_layer):
-	            node,edge = self.processing_layers[i](node,edge_index,edge)
-	
-	        out = self.output_layer(node,edge_index,edge)
-	    	out = self.sigmoid(out)
-	        return out
-		
+    class AtomEmbedding(nn.Module):
+        def __init__(self, num_class, emb_dim):
+            super(CoGN_Model.AtomEmbedding, self).__init__()
+            self.embedding_layer = nn.Embedding(num_class, emb_dim)
+        
+        def forward(self, inputs):
+            return self.embedding_layer(inputs)
+    
+    class GaussBasisExpansion(nn.Module):
+        def __init__(self, mu, sigma, **kwargs):
+            super().__init__(**kwargs)
+            mu = torch.unsqueeze(torch.FloatTensor(mu), 0)
+            self.register_buffer("mu", mu)
+            sigma = torch.unsqueeze(torch.FloatTensor(sigma), 0)
+            self.register_buffer("sigma", sigma)
+        
+        @classmethod
+        def from_bounds(cls, n: int, low: float, high: float, variance: float = 1.0):
+            mus = np.linspace(low, high, num=n + 1)
+            var = np.diff(mus)
+            mus = mus[1:]
+            return cls(mus, np.sqrt(var * variance))
+        
+        @classmethod
+        def from_bounds_log(cls, n: int, low: float, high: float, base: float = 32, variance: float = 1):
+            mus = (np.logspace(0, 1, num=n + 1, base=base) - 1) / (base - 1) * (high - low) + low
+            var = np.diff(mus)
+            mus = mus[1:]
+            return cls(mus, np.sqrt(var * variance))
+        
+        def forward(self, x, **kwargs):
+            return torch.exp(-torch.pow(x - self.mu, 2) / (2 * torch.pow(self.sigma, 2)))
+    
+    class EdgeEmbedding(nn.Module):
+        def __init__(self, bins_distance=32, max_distance=5.0, distance_log_base=1.0, gaussian_width_distance=1.0):
+            super().__init__()
+            if distance_log_base == 1.0:
+                self.distance_embedding = CoGN_Model.GaussBasisExpansion.from_bounds(
+                    bins_distance, 0.0, max_distance, variance=gaussian_width_distance
+                )
+            else:
+                self.distance_embedding = CoGN_Model.GaussBasisExpansion.from_bounds_log(
+                    bins_distance, 0.0, max_distance, base=distance_log_base, variance=gaussian_width_distance,
+                )
+        
+        def forward(self, distance):
+            d = torch.unsqueeze(distance, 1)
+            return self.distance_embedding(d)
+    
+    class Block(nn.Module):
+        def __init__(self, node_mlp, edge_mlp, global_mlp, block, aggregate_edges_local="sum"):
+            super().__init__()
+            self.aggregate_edges_local = aggregate_edges_local
+            self.block = block
+            
+            if edge_mlp:
+                self.edgemlp = nn.Sequential(
+                    nn.Linear(edge_mlp["input_dim"], edge_mlp["hidden_dim_list"][0]),
+                    nn.ReLU(),
+                    nn.Linear(edge_mlp["hidden_dim_list"][0], edge_mlp["hidden_dim_list"][0])
+                )
+            
+            if node_mlp:
+                self.nodemlp = nn.Sequential(
+                    nn.Linear(node_mlp["input_dim"], node_mlp["hidden_dim_list"][0]),
+                    nn.ReLU(),
+                    nn.Linear(node_mlp["hidden_dim_list"][0], node_mlp["input_dim"])
+                )
+            
+            if global_mlp:
+                self.globalmlp = nn.Sequential(
+                    nn.Linear(global_mlp["input_dim"], global_mlp["hidden_dim_list"][0]),
+                    nn.ReLU(),
+                    nn.Linear(global_mlp["hidden_dim_list"][0], global_mlp["hidden_dim_list"][0])
+                )
+        
+        def update_edges(self, x, edge_index, edge_attr):
+            node_in = x[edge_index[0].to(int)]
+            node_out = x[edge_index[1].to(int)]
+            concat_feature = torch.cat((edge_attr, node_in, node_out), dim=-1)
+            edge_attr_new = self.edgemlp(concat_feature)
+            return edge_attr_new
+        
+        def update_nodes(self, x, edge_index, edge_attr):
+            node_index = edge_index[0]
+            aggregated_edge = scatter(edge_attr, node_index, dim=0, reduce=self.aggregate_edges_local)
+            x = x + self.nodemlp(aggregated_edge)
+            return x
+        
+        def update_global(self, x, edge_index):
+            x_mean = torch.mean(x, dim=0)
+            global_out = self.globalmlp(x_mean)
+            return global_out
+        
+        def forward(self, x, edge_index, edge_attr):
+            if self.block == "processing":
+                edge_attr = self.update_edges(x, edge_index, edge_attr)
+                x = self.update_nodes(x, edge_index, edge_attr)
+                return x, edge_attr
+            if self.block == "output":
+                return self.update_global(x, edge_index)
+    
+    def __init__(self, node_class, emb_dim=128, num_layer=5, bins_distance=32, distance_cutoff=5):
+        super().__init__()
+        self.atom_embedding = CoGN_Model.AtomEmbedding(node_class, emb_dim)
+        self.edge_embedding = CoGN_Model.EdgeEmbedding(
+            bins_distance=bins_distance, max_distance=distance_cutoff
+        )
+        
+        self.atom_mlp = nn.Linear(emb_dim, emb_dim)
+        self.edge_mlp = nn.Linear(bins_distance, emb_dim)
+        
+        processing_block_cfg = {
+            'edge_mlp': {'input_dim': emb_dim * 3, 'hidden_dim_list': [emb_dim] * 5, 'activation': 'silu'},
+            'node_mlp': {'input_dim': emb_dim, 'hidden_dim_list': [emb_dim], 'activation': 'silu'},
+            'global_mlp': None,
+            'aggregate_edges_local': 'sum',
+            "block": "processing"
+        }
+        
+        output_block_cfg = {
+            'edge_mlp': None,
+            'node_mlp': None,
+            'global_mlp': {'input_dim': emb_dim, 'hidden_dim_list': [1], 'activation': None},
+            "block": "output"
+        }
+        
+        self.num_layer = num_layer
+        self.processing_layers = nn.ModuleList([
+            CoGN_Model.Block(**processing_block_cfg) for _ in range(self.num_layer)
+        ])
+        self.output_layer = CoGN_Model.Block(**output_block_cfg)
+        self.sigmoid = nn.Sigmoid()
+    
+    def forward(self, x, edge_index, edge_attr):
+        node = self.atom_embedding(x)
+        node = self.atom_mlp(node)
+        
+        edge = self.edge_embedding(edge_attr)
+        edge = self.edge_mlp(edge)
+        
+        for i in range(self.num_layer):
+            node, edge = self.processing_layers[i](node, edge_index, edge)
+        
+        out = self.output_layer(node, edge_index, edge)
+        out = self.sigmoid(out)
+        return out
+
+# Instantiate and print the model
+net_CoGN = CoGN_Model(node_class=100)  # Adjust `node_class` as necessary
+print(net_CoGN)
+
